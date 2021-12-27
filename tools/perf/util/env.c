@@ -10,11 +10,13 @@
 #include <sys/utsname.h>
 #include <stdlib.h>
 #include <string.h>
+#include "strbuf.h"
 
 struct perf_env perf_env;
 
 #ifdef HAVE_LIBBPF_SUPPORT
 #include "bpf-event.h"
+#include "bpf-utils.h"
 #include <bpf/libbpf.h>
 
 void perf_env__insert_bpf_prog_info(struct perf_env *env,
@@ -73,12 +75,13 @@ out:
 	return node;
 }
 
-void perf_env__insert_btf(struct perf_env *env, struct btf_node *btf_node)
+bool perf_env__insert_btf(struct perf_env *env, struct btf_node *btf_node)
 {
 	struct rb_node *parent = NULL;
 	__u32 btf_id = btf_node->id;
 	struct btf_node *node;
 	struct rb_node **p;
+	bool ret = true;
 
 	down_write(&env->bpf_progs.lock);
 	p = &env->bpf_progs.btfs.rb_node;
@@ -92,6 +95,7 @@ void perf_env__insert_btf(struct perf_env *env, struct btf_node *btf_node)
 			p = &(*p)->rb_right;
 		} else {
 			pr_debug("duplicated btf %u\n", btf_id);
+			ret = false;
 			goto out;
 		}
 	}
@@ -101,6 +105,7 @@ void perf_env__insert_btf(struct perf_env *env, struct btf_node *btf_node)
 	env->bpf_progs.btfs_cnt++;
 out:
 	up_write(&env->bpf_progs.lock);
+	return ret;
 }
 
 struct btf_node *perf_env__find_btf(struct perf_env *env, __u32 btf_id)
@@ -306,6 +311,45 @@ int perf_env__read_cpu_topology_map(struct perf_env *env)
 	return 0;
 }
 
+int perf_env__read_pmu_mappings(struct perf_env *env)
+{
+	struct perf_pmu *pmu = NULL;
+	u32 pmu_num = 0;
+	struct strbuf sb;
+
+	while ((pmu = perf_pmu__scan(pmu))) {
+		if (!pmu->name)
+			continue;
+		pmu_num++;
+	}
+	if (!pmu_num) {
+		pr_debug("pmu mappings not available\n");
+		return -ENOENT;
+	}
+	env->nr_pmu_mappings = pmu_num;
+
+	if (strbuf_init(&sb, 128 * pmu_num) < 0)
+		return -ENOMEM;
+
+	while ((pmu = perf_pmu__scan(pmu))) {
+		if (!pmu->name)
+			continue;
+		if (strbuf_addf(&sb, "%u:%s", pmu->type, pmu->name) < 0)
+			goto error;
+		/* include a NULL character at the end */
+		if (strbuf_add(&sb, "", 1) < 0)
+			goto error;
+	}
+
+	env->pmu_mappings = strbuf_detach(&sb, NULL);
+
+	return 0;
+
+error:
+	strbuf_release(&sb);
+	return -1;
+}
+
 int perf_env__read_cpuid(struct perf_env *env)
 {
 	char cpuid[128];
@@ -404,6 +448,44 @@ const char *perf_env__arch(struct perf_env *env)
 	return normalize_arch(arch_name);
 }
 
+const char *perf_env__cpuid(struct perf_env *env)
+{
+	int status;
+
+	if (!env || !env->cpuid) { /* Assume local operation */
+		status = perf_env__read_cpuid(env);
+		if (status)
+			return NULL;
+	}
+
+	return env->cpuid;
+}
+
+int perf_env__nr_pmu_mappings(struct perf_env *env)
+{
+	int status;
+
+	if (!env || !env->nr_pmu_mappings) { /* Assume local operation */
+		status = perf_env__read_pmu_mappings(env);
+		if (status)
+			return 0;
+	}
+
+	return env->nr_pmu_mappings;
+}
+
+const char *perf_env__pmu_mappings(struct perf_env *env)
+{
+	int status;
+
+	if (!env || !env->pmu_mappings) { /* Assume local operation */
+		status = perf_env__read_pmu_mappings(env);
+		if (status)
+			return NULL;
+	}
+
+	return env->pmu_mappings;
+}
 
 int perf_env__numa_node(struct perf_env *env, int cpu)
 {

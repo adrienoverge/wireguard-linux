@@ -139,9 +139,13 @@ static void __smu_cmn_reg_print_error(struct smu_context *smu,
 	const char *message = smu_get_message_name(smu, msg);
 
 	switch (reg_c2pmsg_90) {
-	case SMU_RESP_NONE:
+	case SMU_RESP_NONE: {
+		u32 msg_idx = RREG32_SOC15(MP1, 0, mmMP1_SMN_C2PMSG_66);
+		u32 prm     = RREG32_SOC15(MP1, 0, mmMP1_SMN_C2PMSG_82);
 		dev_err_ratelimited(adev->dev,
-				    "SMU: I'm not done with your previous command!");
+				    "SMU: I'm not done with your previous command: SMN_C2PMSG_66:0x%08X SMN_C2PMSG_82:0x%08X",
+				    msg_idx, prm);
+	}
 		break;
 	case SMU_RESP_OK:
 		/* The SMU executed the command. It completed with a
@@ -1052,4 +1056,25 @@ int smu_cmn_set_mp1_state(struct smu_context *smu,
 		dev_err(smu->adev->dev, "[PrepareMp1] Failed!\n");
 
 	return ret;
+}
+
+bool smu_cmn_is_audio_func_enabled(struct amdgpu_device *adev)
+{
+	struct pci_dev *p = NULL;
+	bool snd_driver_loaded;
+
+	/*
+	 * If the ASIC comes with no audio function, we always assume
+	 * it is "enabled".
+	 */
+	p = pci_get_domain_bus_and_slot(pci_domain_nr(adev->pdev->bus),
+			adev->pdev->bus->number, 1);
+	if (!p)
+		return true;
+
+	snd_driver_loaded = pci_is_enabled(p) ? true : false;
+
+	pci_dev_put(p);
+
+	return snd_driver_loaded;
 }
